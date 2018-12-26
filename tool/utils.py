@@ -11,6 +11,15 @@ def relative_ranks(x):
     return y / (x.size - 1.) - 0.5
 
 
+class Schedule(object):
+    def value(self, t):
+        raise NotImplementedError()
+
+
+def linear_interpolation(l, r, alpha):
+    return l + alpha * (r - l)
+
+
 class PiecewiseSchedule(object):
     def __init__(self, endpoints, interpolation=linear_interpolation, outside_value=None):
         idxes = [e[0] for e in endpoints]

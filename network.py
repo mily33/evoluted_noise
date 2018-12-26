@@ -5,9 +5,10 @@ import chainer.functions as CF
 import chainer.links as L
 import numpy as np
 
-class Net(nn.Module):
+
+class Nets(nn.Module):
     def __init__(self):
-        super(Net, self).__init__()
+        super(Nets, self).__init__()
         self.conv1 = nn.Conv2d(1, 20, 5, 1)
         self.conv2 = nn.Conv2d(20, 50, 5, 1)
         self.fc1 = nn.Linear(4*4*50, 500)
@@ -90,7 +91,7 @@ class CNN(nn.Module):
 
 class Loss(C.Chain):
     def set_params_1d(self, params):
-        n = sorted([p for p, _ in self.namedparams()])
+        n = sorted([p for p, _ in list(self.namedparams())])
         _np = dict(self.namedparams())
         idx = 0
         for e in n:
@@ -100,7 +101,7 @@ class Loss(C.Chain):
     def get_params_1d(self):
         """Get params for ES (theta)
         """
-        n = sorted([p for p, _ in self.namedparams()])
+        n = sorted([p for p, _ in list(self.namedparams())])
         _np = dict(self.namedparams())
         _np = [_np[e].data.flatten() for e in n]
         return np.concatenate(_np)
@@ -112,11 +113,21 @@ class Loss(C.Chain):
 class loss_net(Loss):
     def __init__(self):
         super(loss_net, self).__init__()
-        self.l1 = nn.Linear(28, 28 * 3)
-        self.l2 = nn.Sequential(nn.Linear(28 * 3, 14), nn.Sigmoid())
+        l1 = L.Linear(28, 28 * 3)
+        l2 = L.Linear(28 * 3, 14)
+        Loss.__init__(self, l1=l1, l2=l2)
 
-    def loss(self, x):
+    def forward(self, x):
         x = self.l1(x)
         x = self.l2(x)
+        x = F.sigmoid(x)
         return x
 
+
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.fc = nn.Linear(2, 1)
+
+    def forward(self, x):
+        return self.fc(x)
