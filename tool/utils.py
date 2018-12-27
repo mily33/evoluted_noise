@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 
 def relative_ranks(x):
@@ -39,15 +40,15 @@ class PiecewiseSchedule(object):
 
 
 class Adam(object):
-    def __init__(self, shape, stepsize, beta1=0.9, beta2=0.999, epsilon=1e-08, dtype=np.float32):
+    def __init__(self, shape, stepsize, beta1=0.9, beta2=0.999, epsilon=1e-08):
         self.stepsize, self.beta1, self.beta2, self.epsilon = stepsize, beta1, beta2, epsilon
         self.t = 0
-        self.m = np.zeros(shape, dtype=dtype)
-        self.v = np.zeros(shape, dtype=dtype)
+        self.m = torch.zeros(shape)
+        self.v = torch.zeros(shape)
 
     def step(self, g):
         self.t += 1
         a = self.stepsize * np.sqrt(1 - self.beta2 ** self.t) / (1 - self.beta1 ** self.t)
         self.m = self.beta1 * self.m + (1 - self.beta1) * g
         self.v = self.beta2 * self.v + (1 - self.beta2) * (g * g)
-        return - a * self.m / (np.sqrt(self.v) + self.epsilon)
+        return - a * self.m / (torch.sqrt(self.v) + self.epsilon)

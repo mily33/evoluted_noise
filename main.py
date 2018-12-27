@@ -21,15 +21,15 @@ def train(args, model, device, train_loader, optimizer, epoch):
         #                100. * batch_idx / len(train_loader), loss.item()))
 
 
-def test(model, device, test_loader, epoch):
+def test(model, test_loader):
     model.eval()
     test_loss = 0
     correct = 0
     with torch.no_grad():
         for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
+            data, target = data.cuda(), target.cuda()
             output = model(data)
-            test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+            test_loss += F.nll_loss(output, target).item()  # sum up batch loss
             pred = output.max(1, keepdim=True)[1]  # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
 
@@ -63,16 +63,16 @@ def main():
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
     target_model = CNN(input_channel=1)
-    target_model = target_model.to(device)
+    target_model = torch.nn.DataParallel(target_model).cuda()
     target_optimizer = optim.SGD(target_model.parameters(), lr=args.lr, momentum=args.momentum)
 
-    # for epoch in range(args.target_epoch):
-    #     train(args, target_model, device, train_loader, target_optimizer, epoch)
+    for epoch in range(args.target_epoch):
+        train(args, target_model, device, train_loader, target_optimizer, epoch)
 
-    # test_loss, correct = test(target_model, device, test_loader, args.target_epoch)
-    # print('Target model completed. Test loss %f, test accuracy %f' % (test_loss, correct))
+    test_loss, correct = test(target_model, test_loader)
+    print('Target model completed. Test loss %f, test accuracy %f' % (test_loss, correct))
     trainer = OuterTrainer(target_model, device, train_dataset, test_dataset, fun_params)
-    trainer.train(8)
+    trainer.train(fun_params['outer_n_worker'])
 
 
 if __name__ == '__main__':

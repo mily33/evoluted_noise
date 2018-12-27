@@ -4,11 +4,12 @@ import chainer as C
 import chainer.functions as CF
 import chainer.links as L
 import numpy as np
+import torch.autograd.function
 
 
-class Nets(nn.Module):
+class Net(nn.Module):
     def __init__(self):
-        super(Nets, self).__init__()
+        super(Net, self).__init__()
         self.conv1 = nn.Conv2d(1, 20, 5, 1)
         self.conv2 = nn.Conv2d(20, 50, 5, 1)
         self.fc1 = nn.Linear(4*4*50, 500)
@@ -23,7 +24,6 @@ class Nets(nn.Module):
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return F.log_softmax(x, dim=1)
-
 
 def call_bn(bn, x):
     return bn(x)
@@ -86,7 +86,7 @@ class CNN(nn.Module):
         logit = self.l_c1(h)
         if self.top_bn:
             logit = call_bn(self.bn_c1, logit)
-        return F.log_softmax(logit)
+        return F.log_softmax(logit, dim=1)
 
 
 class Loss(C.Chain):
@@ -110,24 +110,14 @@ class Loss(C.Chain):
         raise NotImplementedError
 
 
-class loss_net(Loss):
-    def __init__(self):
+class loss_net(nn.Module):
+    def __init__(self, ndim):
         super(loss_net, self).__init__()
-        l1 = L.Linear(28, 28 * 3)
-        l2 = L.Linear(28 * 3, 14)
-        Loss.__init__(self, l1=l1, l2=l2)
+        self.l1 = nn.Linear(2 * ndim, ndim * 6)
+        self.l2 = nn.Linear(ndim * 6, ndim)
 
     def forward(self, x):
         x = self.l1(x)
         x = self.l2(x)
-        x = F.sigmoid(x)
+        x = F.softmax(x, dim=1)
         return x
-
-
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.fc = nn.Linear(2, 1)
-
-    def forward(self, x):
-        return self.fc(x)

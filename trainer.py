@@ -3,35 +3,41 @@ from tool.logz import G
 import numpy as np
 from network import loss_net
 from network import CNN
-from mpi4py import MPI
 import time
 import os
 import torch.optim as optim
-from network import Net
 from torch.multiprocessing import Pool
 import torch.nn.functional as F
-from tool.utils import PiecewiseSchedule, Adam, relative_ranks
+from tool.utils import PiecewiseSchedule
+from tool.utils import Adam
+from tool.soft_target_cross_entropy import SoftCrossEntropy
 
 
 def inner_train(args):
-    print(len(args))
-    epoch, pool_rank, phi, trainer = args
+    epoch, pool_rank, phi, target_model, train_dataset, test_dataset, inner_args = args
+    trainer = InnerTrainer(target_model, train_dataset, test_dataset, inner_args, pool_rank)
     accuracy = trainer.train(epoch, pool_rank, phi)
+    # accuracy = 0.1 * pool_rank
     print('Worker %d, test accuracy: %f' % (pool_rank, accuracy))
     return dict(accuracy=accuracy)
 
 
 class InnerTrainer(object):
-    def __init__(self, target_model, train_dataset, test_dataset, args):
+    def __init__(self, target_model, train_dataset, test_dataset, args, pool_rank=None):
         self.target_model = target_model
         self.test_batch_size = args['test_batch_size']
         self.logdir = args['logdir']
-        self.save_model = args['save_model']
+
+        self.save_model = False
         self.log = G()
+        self.nclass = args['nclass']
         if self.save_model:
+            self.logdir = os.path.join(self.logdir, '%d' % pool_rank)
+            if not os.path.exists(self.logdir):
+                os.mkdir(self.logdir)
             self.log.configure_output_dir(self.logdir)
             self.log.save_params(args)
-            self.log.path_model = self.logdir
+            self.log.path_model = os.path.join(self.logdir, 'model%d.pth.tar')
 
         self.train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args['inner_batch_size'],
                                                         shuffle=True)
@@ -43,41 +49,49 @@ class InnerTrainer(object):
         self.inner_momentum = args['inner_momentum']
 
     def train(self, epoch, pool_rank, phi):
-        if epoch % 20 == 0 and self.save_model:
-            logdir = os.path.join(self.logdir, '%d' % pool_rank)
-            if not os.path.exists(logdir):
-                os.makedirs(logdir)
-            log = G()
-            log.configure_output_dir(logdir)
-            log.path_model = os.path.join(logdir, 'model%d.pth.tar' % epoch)
-
         model = CNN(input_channel=1)
         model = torch.nn.DataParallel(model).cuda()
         optimizer = optim.SGD(model.parameters(), lr=self.inner_lr, momentum=self.inner_momentum)
+        cross_entropy = SoftCrossEntropy()
         model.train()
-        eloss = loss_net()
-        eloss.set_params_1d(phi)
+
+        self.target_model.eval()
+
+        eloss = loss_net(self.nclass)
+        eloss = torch.nn.DataParallel(eloss).cuda()
+        for key in eloss.state_dict().keys():
+            eloss.state_dict()[key] = phi[key]
+        eloss.eval()
         minloss = 10000
+        # print('start train model')
         for batch_idx, (data, target) in enumerate(self.train_loader):
-            data, target = data.cuda(), target.cuda()
+            data = data.cuda()
             optimizer.zero_grad()
+
             output = model(data)
             target_output = self.target_model(data)
-            soft_target = eloss.forward(torch.cat((target, target_output)))
-            loss = F.nll_loss(output, soft_target)
+            target = target.view(-1, 1)
+
+            target = torch.zeros(data.shape[0], 10).scatter_(1, target.long(), 1.0)
+            varInput = torch.cat((target.cuda(), target_output), 1)
+            # print(varInput.shape, target_output.shape)
+            soft_target = eloss.forward(varInput)
+            # print(soft_target)
+            loss = cross_entropy(output, soft_target)
             if self.save_model:
                 if epoch % 20 == 0:
-                    log.log_tabular('epoch', batch_idx)
-                    log.log_tabular('loss', loss)
+                    self.log.log_tabular('epoch', batch_idx)
+                    self.log.log_tabular('loss', loss.item())
                 if loss < minloss:
                     torch.save({'epoch': batch_idx + 1, 'state_dict': model.state_dict(), 'best_loss': minloss,
-                                'optimizer': optimizer.state_dict()}, log.path_model)
+                                'optimizer': optimizer.state_dict()}, self.log.path_model)
             loss.backward()
             optimizer.step()
+            # print('[pool: %d] epoch %d, loss: %f' % (pool_rank, epoch, loss.item()))
 
         if epoch % 20 == 0 and self.save_model:
-            log.dump_tabular()
-            log.pickle_tf_vars()
+            self.log.dump_tabular()
+            self.log.pickle_tf_vars()
 
         accuracy = self.test(model)
         return accuracy
@@ -90,12 +104,12 @@ class InnerTrainer(object):
             for data, target in self.test_loader:
                 data, target = data.cuda(), target.cuda()
                 output = model(data)
-                test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+                test_loss += F.nll_loss(output, target).item()  # sum up batch loss
                 pred = output.max(1, keepdim=True)[1]  # get the index of the max log-probability
                 correct += pred.eq(target.view_as(pred)).sum().item()
 
         test_loss /= len(self.test_loader.dataset)
-        return 100. * correct / len(self.test_loader.dataset)
+        return correct / len(self.test_loader.dataset)
 
 
 class OuterTrainer(object):
@@ -109,7 +123,7 @@ class OuterTrainer(object):
         if self.save_model:
             self.log.configure_output_dir(self.logdir)
             self.log.save_params(args)
-            self.log.path_model = self.logdir
+            self.log.path_model = os.path.join(self.logdir, 'model.pth.tar')
 
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
@@ -139,36 +153,27 @@ class OuterTrainer(object):
         outer_lr_scheduler = PiecewiseSchedule([(0, self.outer_lr),
                                                 (int(self.outer_n_epoch / 2), self.outer_lr * 0.1)],
                                                outside_value=self.outer_lr * 0.1)
-        evoluted_loss = loss_net()
-        phi = evoluted_loss.get_params_1d()
-        num_params = len(phi)
-        adam = Adam(shape=(num_params, ), beta1=0., stepsize=self.outer_lr, dtype=np.float32)
-
+        evoluted_loss = loss_net(self.inner_args['nclass'])
+        evoluted_loss = torch.nn.DataParallel(evoluted_loss).cuda()
+        phi_state_dict = evoluted_loss.state_dict()
+        evoluted_loss.train()
         for epoch in range(self.outer_n_epoch):
-            adam.stepsize = outer_lr_scheduler.value(epoch)
-
-            noise = np.random.randn(self.outer_n_worker, num_params)
-            phi_noise = phi[np.newaxis, :] + noise * self.outer_std
-            phi_noise = phi_noise.reshape(MPI.COMM_WORLD.Get_size(), -1)
-
-            recvbuf = np.empty(phi_noise.shape[1], dtype='float')
-            MPI.COMM_WORLD.Scatter(phi_noise, recvbuf, root=0)
-            phi_noise = recvbuf.reshape(-1, num_params)
+            phi_noise = []
+            for i in range(self.outer_n_worker):
+                noise = dict()
+                for key in evoluted_loss.state_dict().keys():
+                    noise[key] = self.outer_std * torch.randn_like(evoluted_loss.state_dict()[key]) + phi_state_dict[key]
+                phi_noise.append(noise)
 
             start_time = time.time()
-            pool_size = int(self.outer_n_worker / MPI.COMM_WORLD.Get_size())
+            pool_size = self.outer_n_worker
 
-            trainer = InnerTrainer(self.target_model, self.train_dataset, self.test_dataset, self.inner_args)
-            results = pool.map_async(inner_train,
-                                     ([epoch] * pool_size, range(pool_size), phi_noise, [trainer]*pool_size))
+            args = ((epoch, i, phi_noise[i], self.target_model, self.train_dataset, self.test_dataset, self.inner_args)
+                    for i in range(pool_size))
+            results = pool.map_async(inner_train, args)
+
             results = results.get()
             result = [np.mean(r['accuracy']) for r in results]
-
-            recvbuf = np.empty([MPI.COMM_WORLD.Get_size(), 7 * pool_size],
-                               # 7 = number of scalars in results vector
-                               dtype='float') if MPI.COMM_WORLD.Get_rank() == 0 else None
-            results_processed_arr = np.asarray([result], dtype='float').ravel()
-            MPI.COMM_WORLD.Gather(results_processed_arr, recvbuf, root=0)
 
             print('Epoch %d, max accuracy: %f(%d), min accuracy: %f(%d)' %
                   (epoch, np.max(result), result.index(np.max(result)), np.min(result), result.index(np.min(result))))
@@ -176,23 +181,21 @@ class OuterTrainer(object):
             if self.save_model:
                 self.log.log_tabular('epoch', epoch)
                 for i in range(len(result)):
-                    self.log.log_tabular('reward %d' % i, result[0])
+                    self.log.log_tabular('reward %d' % i, result[i])
 
-            # outer loop  update at node 0
-            if MPI.COMM_WORLD.Get_rank() == 0:
-                print('All inner loops completed, returns gathered ({:.2f} sec).'.format(time.time() - start_time))
-                results_processed_arr = recvbuf.reshape(MPI.COMM_WORLD.Get_size(), 7, pool_size)
-                results_processed_arr = np.transpose(results_processed_arr, (0, 2, 1)).reshape(-1, 7)
-                results_processed = [dict(returns=r[0]) for r in results_processed_arr]
-                returns = np.asarray([r['returns'] for r in results_processed])
+            print('All inner loops completed, returns gathered ({:.2f} sec).'.format(time.time() - start_time))
+            print('\n')
+            for key in evoluted_loss.state_dict():
+                grad = 0
+                for i in range(self.outer_n_worker):
+                    grad = result[i] * phi_noise[i][key] - self.outer_l2 * evoluted_loss.state_dict()[key].cpu()
+                lr = outer_lr_scheduler.value(epoch)
+                adam = Adam(shape=grad.shape, stepsize=lr)
+                evoluted_loss.state_dict()[key] -= adam.step(grad / self.outer_n_worker).cuda()
 
-                # ES update
-                noise = noise[::1]
-                returns = np.mean(returns.reshape(-1, 1), axis=1)
-                phi_grad = relative_ranks(returns).dot(noise) / self.outer_n_worker - self.outer_l2 * phi
-                phi -= adam.step(phi_grad)
-                if self.save_model:
-                    self.save_theta(phi, self.log.path_model)
+            if self.save_model:
+                torch.save({'epoch': epoch + 1, 'state_dict': evoluted_loss.state_dict()}, self.log.path_model)
+            # pool.join()
         if self.save_model:
             self.log.dump_tabular()
             self.log.pickle_tf_vars()
