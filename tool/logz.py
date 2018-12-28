@@ -20,7 +20,7 @@ import time
 import atexit
 import os
 import pickle
-import tensorflow as tf
+# import tensorflow as tf
 
 color2num = dict(
     gray=30,
@@ -60,9 +60,8 @@ class G(object):
         Set output directory to d, or to /tmp/somerandomnumber if d is None
         """
         self.output_dir = d or "/tmp/experiments/%i" % int(time.time())
-        assert not osp.exists(self.output_dir), \
-            "Log dir %s already exists! Delete it first or use a different dir" % self.output_dir
-        os.makedirs(self.output_dir)
+        if not osp.exists(self.output_dir):
+            os.makedirs(self.output_dir)
         self.output_file = open(osp.join(self.output_dir, "loself.txt"), 'w')
         atexit.register(self.output_file.close)
         print(colorize("Logging data to %s" % self.output_file.name, 'green', bold=True))
@@ -85,14 +84,14 @@ class G(object):
         with open(osp.join(self.output_dir, "params.json"), 'w') as out:
             out.write(json.dumps(params, separators=(',\n', '\t:\t'), sort_keys=True))
 
-    def pickle_tf_vars(self):
-        """
-        Saves tensorflow variables
-        Requires them to be initialized first, also a default session must exist
-        """
-        _dict = {v.name: v.eval() for v in tf.global_variables()}
-        with open(osp.join(self.output_dir, "vars.pkl"), 'wb') as f:
-            pickle.dump(_dict, f)
+    # def pickle_tf_vars(self):
+    #     """
+    #     Saves tensorflow variables
+    #     Requires them to be initialized first, also a default session must exist
+    #     """
+    #     _dict = {v.name: v.eval() for v in tf.global_variables()}
+    #     with open(osp.join(self.output_dir, "vars.pkl"), 'wb') as f:
+    #         pickle.dump(_dict, f)
 
     def dump_tabular(self):
         """

@@ -91,7 +91,6 @@ class InnerTrainer(object):
 
         if epoch % 20 == 0 and self.save_model:
             self.log.dump_tabular()
-            self.log.pickle_tf_vars()
 
         accuracy = self.test(model)
         return accuracy
@@ -135,6 +134,7 @@ class OuterTrainer(object):
         self.outer_n_epoch = args['outer_n_epoch']
         self.outer_std = args['outer_std']
         self.outer_l2 = args['outer_l2']
+        self.outer_n_noise = args['outer_n_noise']
 
     @staticmethod
     def save_theta(theta, dir, ext=''):
@@ -159,59 +159,91 @@ class OuterTrainer(object):
         evoluted_loss.train()
         for epoch in range(self.outer_n_epoch):
             phi_noise = []
-            for i in range(self.outer_n_worker):
+            for i in range(self.outer_n_noise):
                 noise = dict()
                 for key in evoluted_loss.state_dict().keys():
                     noise[key] = self.outer_std * torch.randn_like(evoluted_loss.state_dict()[key]) + phi_state_dict[key]
                 phi_noise.append(noise)
-
             start_time = time.time()
-            pool_size = self.outer_n_worker
 
-            args = ((epoch, i, phi_noise[i], self.target_model, self.train_dataset, self.test_dataset, self.inner_args)
-                    for i in range(pool_size))
-            results = pool.map_async(inner_train, args)
-
-            results = results.get()
-            result = [np.mean(r['accuracy']) for r in results]
-
-            print('Epoch %d, max accuracy: %f(%d), min accuracy: %f(%d)' %
-                  (epoch, np.max(result), result.index(np.max(result)), np.min(result), result.index(np.min(result))))
-
-            if self.save_model:
-                self.log.log_tabular('epoch', epoch)
-                for i in range(len(result)):
-                    self.log.log_tabular('reward %d' % i, result[i])
+            assert self.outer_n_worker % self.outer_n_noise == 0
+            rewards = []
+            for j in range(self.outer_n_worker // self.outer_n_noise):
+                print(j)
+                args = ((epoch, i, phi_noise[i], self.target_model, self.train_dataset, self.test_dataset, self.inner_args)
+                        for i in range(self.outer_n_noise))
+                results = pool.map_async(inner_train, args)
+                results = results.get()
+                reward = [np.mean(r['accuracy']) for r in results]
+                rewards.append(reward)
+            result = np.mean(rewards, 0).tolist()
+            print('Epoch %d, mean accuracy: %f, max accuracy: %f(%d), min accuracy: %f(%d)' %
+                  (epoch, np.mean(result), np.max(result), result.index(np.max(result)), np.min(result), result.index(np.min(result))))
 
             print('All inner loops completed, returns gathered ({:.2f} sec).'.format(time.time() - start_time))
             print('\n')
             for key in evoluted_loss.state_dict():
                 grad = 0
-                for i in range(self.outer_n_worker):
-                    grad = result[i] * phi_noise[i][key] - self.outer_l2 * evoluted_loss.state_dict()[key].cpu()
+                for i in range(self.outer_n_noise):
+                    grad = result[i] * phi_noise[i][key].cpu() - self.outer_l2 * evoluted_loss.state_dict()[key].cpu()
                 lr = outer_lr_scheduler.value(epoch)
                 adam = Adam(shape=grad.shape, stepsize=lr)
                 evoluted_loss.state_dict()[key] -= adam.step(grad / self.outer_n_worker).cuda()
 
             if self.save_model:
                 torch.save({'epoch': epoch + 1, 'state_dict': evoluted_loss.state_dict()}, self.log.path_model)
-            # pool.join()
-        if self.save_model:
-            self.log.dump_tabular()
-            self.log.pickle_tf_vars()
+                self.log.log_tabular('epoch', epoch)
+                for i in range(len(result)):
+                    self.log.log_tabular('reward %d' % i, result[i])
+                self.log.dump_tabular()
         pool.close()
 
-    def test(self, model):
-        model.eval()
-        test_loss = 0
-        correct = 0
-        with torch.no_grad():
-            for data, target in self.test_loader:
-                data, target = data.to(self.device), target.to(self.device)
-                output = model(data)
-                test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-                pred = output.max(1, keepdim=True)[1]  # get the index of the max log-probability
-                correct += pred.eq(target.view_as(pred)).sum().item()
+    def test(self, model_path):
+        model = CNN(input_channel=1)
+        model = torch.nn.DataParallel(model).cuda()
+        optimizer = optim.SGD(model.parameters(), lr=self.inner_args['inner_lr'], momentum=self.inner_args['inner_momentum'])
+        cross_entropy = SoftCrossEntropy()
+        model.train()
 
-        test_loss /= len(self.test_loader.dataset)
-        return 100. * correct / len(self.test_loader.dataset)
+        self.target_model.eval()
+
+        eloss = loss_net(self.inner_args['nclass'])
+        eloss = torch.nn.DataParallel(eloss).cuda()
+
+        assert os.path.exists(model_path), 'model path is not exist.'
+        check_point = torch.load(model_path)
+        eloss.load_state_dict(check_point['state_dict'])
+
+        eloss.eval()
+        minloss = 10000
+        # print('start train model')
+        train_loader = torch.utils.data.DataLoader(self.train_dataset,
+                                                   batch_size=self.inner_args['inner_batch_size'],
+                                                   shuffle=True)
+        test_loader = torch.utils.data.DataLoader(self.test_dataset,
+                                                  batch_size=self.inner_args['test_batch_size'], shuffle=True)
+
+        for batch_idx, (data, target) in enumerate(train_loader):
+            data = data.cuda()
+            optimizer.zero_grad()
+
+            output = model(data)
+            target_output = self.target_model(data)
+            target = target.view(-1, 1)
+
+            target = torch.zeros(data.shape[0], 10).scatter_(1, target.long(), 1.0)
+            varInput = torch.cat((target.cuda(), target_output), 1)
+            # print(varInput.shape, target_output.shape)
+            soft_target = eloss.forward(varInput)
+            # print(soft_target)
+            loss = cross_entropy(output, soft_target)
+            if self.save_model:
+                self.log.log_tabular('epoch', batch_idx)
+                self.log.log_tabular('loss', loss.item())
+                self.log.dump_tabular()
+                if loss < minloss:
+                    torch.save({'epoch': batch_idx + 1, 'state_dict': model.state_dict(), 'best_loss': minloss,
+                                'optimizer': optimizer.state_dict()}, self.log.path_model)
+            loss.backward()
+            optimizer.step()
+

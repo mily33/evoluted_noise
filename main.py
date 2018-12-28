@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from trainer import OuterTrainer
 from network import CNN
+import os
 
 
 def train(args, model, device, train_loader, optimizer, epoch):
@@ -66,13 +67,14 @@ def main():
     target_model = torch.nn.DataParallel(target_model).cuda()
     target_optimizer = optim.SGD(target_model.parameters(), lr=args.lr, momentum=args.momentum)
 
-    for epoch in range(args.target_epoch):
-        train(args, target_model, device, train_loader, target_optimizer, epoch)
-
-    test_loss, correct = test(target_model, test_loader)
-    print('Target model completed. Test loss %f, test accuracy %f' % (test_loss, correct))
+    # for epoch in range(args.target_epoch):
+    #     train(args, target_model, device, train_loader, target_optimizer, epoch)
+    # target_model_path = os.path.join(fun_params['logdir'], 'target_model.pth.tar')
+    # torch.save({'state_dict': target_model.state_dict()}, target_model_path)
+    # test_loss, correct = test(target_model, test_loader)
+    # print('Target model completed. Test loss %f, test accuracy %f' % (test_loss, correct))
     trainer = OuterTrainer(target_model, device, train_dataset, test_dataset, fun_params)
-    trainer.train(fun_params['outer_n_worker'])
+    trainer.train(fun_params['n_process'])
 
 
 if __name__ == '__main__':

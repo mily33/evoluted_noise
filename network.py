@@ -1,10 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import chainer as C
-import chainer.functions as CF
-import chainer.links as L
 import numpy as np
-import torch.autograd.function
 
 
 class Net(nn.Module):

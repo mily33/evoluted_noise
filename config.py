@@ -9,7 +9,7 @@ import os
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
 parser.add_argument('--batch_size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
-parser.add_argument('--test_batch_size', type=int, default=256, metavar='N',
+parser.add_argument('--test_batch_size', type=int, default=64, metavar='N',
                     help='input batch size for testing (default: 1000)')
 parser.add_argument('--epochs', type=int, default=200, metavar='N',
                     help='number of epochs to train (default: 10)')
@@ -85,18 +85,22 @@ if args.save_model:
     if not (os.path.exists(path)):
         os.makedirs(path)
     logdir = os.path.join(path, time.strftime('%m-%d-%H:%M:%S'))
+    if not (os.path.exists(logdir)):
+        os.makedirs(logdir)
 
 fun_params = dict(test_batch_size=args.test_batch_size,
                   logdir=logdir,
-                  outer_n_worker=7,
-                  outer_lr=1e-2,
-                  outer_n_epoch=50,
+                  n_process=8,
+                  outer_n_worker=24,
+                  outer_n_noise=8,
+                  outer_lr=1e-3,
+                  outer_n_epoch=args.epochs,
                   outer_std=0.01,
                   outer_l2=0.001,
                   save_model=args.save_model,
                   inner_args=dict(inner_epoch_freq=20,
                                   test_batch_size=args.test_batch_size,
-                                  inner_batch_size=64,
+                                  inner_batch_size=args.batch_size,
                                   inner_lr=args.lr,
                                   inner_momentum=args.momentum,
                                   save_model=args.save_model,
