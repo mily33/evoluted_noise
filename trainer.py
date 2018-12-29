@@ -108,7 +108,7 @@ class InnerTrainer(object):
                 correct += pred.eq(target.view_as(pred)).sum().item()
 
         test_loss /= len(self.test_loader.dataset)
-        return correct / len(self.test_loader.dataset)
+        return 10 * correct / len(self.test_loader.dataset)
 
 
 class OuterTrainer(object):
@@ -167,16 +167,13 @@ class OuterTrainer(object):
             start_time = time.time()
 
             assert self.outer_n_worker % self.outer_n_noise == 0
-            rewards = []
-            for j in range(self.outer_n_worker // self.outer_n_noise):
-                print(j)
-                args = ((epoch, i, phi_noise[i], self.target_model, self.train_dataset, self.test_dataset, self.inner_args)
-                        for i in range(self.outer_n_noise))
-                results = pool.map_async(inner_train, args)
-                results = results.get()
-                reward = [np.mean(r['accuracy']) for r in results]
-                rewards.append(reward)
-            result = np.mean(rewards, 0).tolist()
+
+            args = ((epoch, i, phi_noise[i], self.target_model, self.train_dataset, self.test_dataset, self.inner_args)
+                    for i in range(self.outer_n_noise))
+            results = pool.map_async(inner_train, args)
+            results = results.get()
+            result = [np.mean(r['accuracy']) for r in results]
+
             print('Epoch %d, mean accuracy: %f, max accuracy: %f(%d), min accuracy: %f(%d)' %
                   (epoch, np.mean(result), np.max(result), result.index(np.max(result)), np.min(result), result.index(np.min(result))))
 
@@ -185,7 +182,7 @@ class OuterTrainer(object):
             for key in evoluted_loss.state_dict():
                 grad = 0
                 for i in range(self.outer_n_noise):
-                    grad = result[i] * phi_noise[i][key].cpu() - self.outer_l2 * evoluted_loss.state_dict()[key].cpu()
+                    grad = result[i] * phi_noise[i][key].cpu() # - self.outer_l2 * evoluted_loss.state_dict()[key].cpu()
                 lr = outer_lr_scheduler.value(epoch)
                 adam = Adam(shape=grad.shape, stepsize=lr)
                 evoluted_loss.state_dict()[key] -= adam.step(grad / self.outer_n_worker).cuda()
