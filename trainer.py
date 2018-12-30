@@ -27,7 +27,6 @@ class InnerTrainer(object):
         self.target_model = target_model
         self.test_batch_size = args['test_batch_size']
         self.logdir = args['logdir']
-
         self.save_model = False
         self.log = G()
         self.nclass = args['nclass']
@@ -60,37 +59,38 @@ class InnerTrainer(object):
         eloss = loss_net(self.nclass)
         eloss = torch.nn.DataParallel(eloss).cuda()
         for key in eloss.state_dict().keys():
-            eloss.state_dict()[key] = phi[key]
+            eloss.state_dict()[key] = eloss.state_dict()[key] + phi[key]
         eloss.eval()
         minloss = 10000
         # print('start train model')
-        for batch_idx, (data, target) in enumerate(self.train_loader):
-            data = data.cuda()
-            optimizer.zero_grad()
+        for e in range(self.inner_epoch_freq):
+            for batch_idx, (data, target) in enumerate(self.train_loader):
+                data = data.cuda()
+                optimizer.zero_grad()
 
-            output = model(data)
-            target_output = self.target_model(data)
-            target = target.view(-1, 1)
+                output = model(data)
+                target_output = self.target_model(data)
+                target = target.view(-1, 1)
 
-            target = torch.zeros(data.shape[0], 10).scatter_(1, target.long(), 1.0)
-            varInput = torch.cat((target.cuda(), target_output), 1)
-            # print(varInput.shape, target_output.shape)
-            soft_target = eloss.forward(varInput)
-            # print(soft_target)
-            loss = cross_entropy(output, soft_target)
-            if self.save_model:
-                if epoch % 20 == 0:
-                    self.log.log_tabular('epoch', batch_idx)
-                    self.log.log_tabular('loss', loss.item())
-                if loss < minloss:
-                    torch.save({'epoch': batch_idx + 1, 'state_dict': model.state_dict(), 'best_loss': minloss,
-                                'optimizer': optimizer.state_dict()}, self.log.path_model)
-            loss.backward()
-            optimizer.step()
-            # print('[pool: %d] epoch %d, loss: %f' % (pool_rank, epoch, loss.item()))
+                target = torch.zeros(data.shape[0], 10).scatter_(1, target.long(), 1.0)
+                varInput = torch.cat((target.cuda(), target_output), 1)
+                # print(varInput.shape, target_output.shape)
+                soft_target = eloss.forward(varInput)
+                # print(soft_target)
+                loss = cross_entropy(output, soft_target)
+                if self.save_model:
+                    if epoch % 20 == 0:
+                        self.log.log_tabular('epoch', batch_idx)
+                        self.log.log_tabular('loss', loss.item())
+                    if loss < minloss:
+                        torch.save({'epoch': batch_idx + 1, 'state_dict': model.state_dict(), 'best_loss': minloss,
+                                    'optimizer': optimizer.state_dict()}, self.log.path_model)
+                loss.backward()
+                optimizer.step()
+                # print('[pool: %d] epoch %d, loss: %f' % (pool_rank, epoch, loss.item()))
 
-        if epoch % 20 == 0 and self.save_model:
-            self.log.dump_tabular()
+            if epoch % 20 == 0 and self.save_model:
+                self.log.dump_tabular()
 
         accuracy = self.test(model)
         return accuracy
@@ -182,7 +182,7 @@ class OuterTrainer(object):
             for key in evoluted_loss.state_dict():
                 grad = 0
                 for i in range(self.outer_n_noise):
-                    grad = result[i] * phi_noise[i][key].cpu() # - self.outer_l2 * evoluted_loss.state_dict()[key].cpu()
+                    grad += result[i] * phi_noise[i][key].cpu() # - self.outer_l2 * evoluted_loss.state_dict()[key].cpu()
                 lr = outer_lr_scheduler.value(epoch)
                 adam = Adam(shape=grad.shape, stepsize=lr)
                 evoluted_loss.state_dict()[key] -= adam.step(grad / self.outer_n_worker).cuda()

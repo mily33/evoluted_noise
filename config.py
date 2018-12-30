@@ -11,7 +11,7 @@ parser.add_argument('--batch_size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--test_batch_size', type=int, default=64, metavar='N',
                     help='input batch size for testing (default: 1000)')
-parser.add_argument('--epochs', type=int, default=200, metavar='N',
+parser.add_argument('--epochs', type=int, default=100, metavar='N',
                     help='number of epochs to train (default: 10)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.01)')
@@ -98,7 +98,7 @@ fun_params = dict(test_batch_size=args.test_batch_size,
                   outer_std=0.01,
                   outer_l2=0.001,
                   save_model=args.save_model,
-                  inner_args=dict(inner_epoch_freq=20,
+                  inner_args=dict(inner_epoch_freq=10,
                                   test_batch_size=args.test_batch_size,
                                   inner_batch_size=args.batch_size,
                                   inner_lr=args.lr,
