@@ -155,9 +155,10 @@ class OuterTrainer(object):
                                                outside_value=self.outer_lr * 0.1)
         evoluted_loss = loss_net(self.inner_args['nclass'])
         evoluted_loss = torch.nn.DataParallel(evoluted_loss).cuda()
-        phi_state_dict = evoluted_loss.state_dict()
+
         evoluted_loss.train()
         for epoch in range(self.outer_n_epoch):
+            phi_state_dict = evoluted_loss.state_dict()
             phi_noise = []
             for i in range(self.outer_n_noise):
                 noise = dict()

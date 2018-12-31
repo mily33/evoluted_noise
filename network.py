@@ -1,6 +1,5 @@
 import torch.nn as nn
 import torch.nn.functional as F
-import chainer as C
 import numpy as np
 
 
@@ -86,25 +85,25 @@ class CNN(nn.Module):
         return F.log_softmax(logit, dim=1)
 
 
-class Loss(C.Chain):
-    def set_params_1d(self, params):
-        n = sorted([p for p, _ in list(self.namedparams())])
-        _np = dict(self.namedparams())
-        idx = 0
-        for e in n:
-            _np[e].data[...] = params[idx:idx + _np[e].size].reshape(_np[e].shape)
-            idx += _np[e].size
-
-    def get_params_1d(self):
-        """Get params for ES (theta)
-        """
-        n = sorted([p for p, _ in list(self.namedparams())])
-        _np = dict(self.namedparams())
-        _np = [_np[e].data.flatten() for e in n]
-        return np.concatenate(_np)
-
-    def loss(self, l):
-        raise NotImplementedError
+# class Loss(C.Chain):
+#     def set_params_1d(self, params):
+#         n = sorted([p for p, _ in list(self.namedparams())])
+#         _np = dict(self.namedparams())
+#         idx = 0
+#         for e in n:
+#             _np[e].data[...] = params[idx:idx + _np[e].size].reshape(_np[e].shape)
+#             idx += _np[e].size
+#
+#     def get_params_1d(self):
+#         """Get params for ES (theta)
+#         """
+#         n = sorted([p for p, _ in list(self.namedparams())])
+#         _np = dict(self.namedparams())
+#         _np = [_np[e].data.flatten() for e in n]
+#         return np.concatenate(_np)
+#
+#     def loss(self, l):
+#         raise NotImplementedError
 
 
 class loss_net(nn.Module):

@@ -88,12 +88,11 @@ def test_loss_net():
         print('Epoch %d, correct %f' % (epoch, correct))
 
 
-def inner_train(x_train, y_noise_train, x_test, y_test, clf, phi):
+def inner_train(x_train, y_noise_train, x_test, y_test, y_pred, phi):
     x_train = torch.FloatTensor(x_train)
-    y_auxiliary = clf(x_train)
     y_noise_train = torch.Tensor(y_noise_train)
     y_noise = torch.zeros(x_train.shape[0], 3).scatter_(1, y_noise_train.long(), 1.0)
-    y_input = torch.cat((y_noise, y_auxiliary), 1)
+    y_input = torch.cat((y_noise, y_pred), 1)
 
     target = loss_net(3)
     for key in target.state_dict().keys():
@@ -104,14 +103,14 @@ def inner_train(x_train, y_noise_train, x_test, y_test, clf, phi):
     y_target = target(y_input)
 
     f = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 3), torch.nn.Softmax())
-    optimizer = optim.SGD(f.parameters(), lr=0.1)
+    optimizer = optim.SGD(f.parameters(), lr=0.01)
     cross_entropy = SoftCrossEntropy()
 
     f.train()
-    for i in range(60):
+    for i in range(20):
         y = f(x_train)
         optimizer.zero_grad()
-        ce = cross_entropy.forward(torch.log(y), y_target)
+        ce = cross_entropy(torch.log(y), y_target)
         # print(ce.item())
 
         ce.backward(retain_graph=True)
@@ -129,44 +128,69 @@ def test_iris():
     X_train, X_test, y_train, y_test = train_test_split(iris.data, iris.target, test_size=0.3, random_state=0)
     y_train_ = np.asarray([[y_train[i]] for i in range(len(y_train))])
     y_train_noisy, actual_noise_rate = noisify(train_labels=y_train_, noise_rate=0.5, noise_type='symmetry', nb_classes=3)
-    # clf = svm.SVC(kernel='linear', C=1, probability=True).fit(X_train, y_train_noisy)
-    # print(clf.score(X_test, y_test))
+    # y_train_noisy = y_train_
     f = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 3), torch.nn.Softmax())
     optimizer = optim.SGD(f.parameters(), lr=0.1)
     f.train()
-    for i in range(60):
-        y = f(torch.FloatTensor(X_train))
+    for i in range(5):
+        x_train = torch.FloatTensor(X_train)
+        y = f(x_train)
         loss = F.nll_loss(torch.log(y), torch.LongTensor(y_train))
         # print(loss.item())
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
     f.eval()
-    y = f(torch.FloatTensor(X_test))
-    y = np.argmax(y.detach().numpy(), 1)
-    # print(sum(y == y_test)/len(y_test))
+    y = f(torch.FloatTensor(X_train))
+    # y_pred = np.argmax(y.detach().numpy(), 1)
+    # print(sum(y_pred == y_test)/len(y_test))
 
     eloss = loss_net(3)
     eloss.eval()
-    phi_state_dict = eloss.state_dict()
-    for epoch in range(100):
+    for epoch in range(1000):
         phi_noise = []
         result = []
-        for i in range(10):
+        for i in range(20):
             noise = dict()
             for key in eloss.state_dict().keys():
-                noise[key] = torch.randn_like(eloss.state_dict()[key]) + phi_state_dict[key]
+                noise[key] = 0.01 * torch.randn_like(eloss.state_dict()[key]) + eloss.state_dict()[key]
             phi_noise.append(noise)
-            result.append(inner_train(X_train, y_train_noisy, X_test, y_test, f, noise))
-        print(np.mean(result))
+            result.append(inner_train(X_train, y_train_noisy, X_test, y_test, y, noise))
+        # print(result)
         for key in eloss.state_dict():
             grad = 0
-            for i in range(10):
-                grad += result[i] * phi_noise[i][key].cpu()  # - self.outer_l2 * evoluted_loss.state_dict()[key].cpu()
-            adam = Adam(shape=grad.shape, stepsize=0.01)
-            # print(grad / 10)
-            eloss.state_dict()[key] -= 0.1 * grad / 10
+            for i in range(20):
+                grad += result[i] * phi_noise[i][key].cpu()# - 0.01 * eloss.state_dict()[key].cpu()
+            # adam = Adam(shape=grad.shape, stepsize=0.01)
+            step = grad / 20
+            eloss.state_dict()[key] += 0.01*step
 
+        x_train = torch.FloatTensor(X_train)
+        y_auxiliary = f(x_train)
+        y_noise_train = torch.Tensor(y_train_noisy)
+        y_noise = torch.zeros(x_train.shape[0], 3).scatter_(1, y_noise_train.long(), 1.0)
+        y_input = torch.cat((y_noise, y_auxiliary), 1)
+        target = eloss(y_input)
+
+        test_model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 3), torch.nn.Softmax())
+        optimizer = optim.SGD(test_model.parameters(), lr=0.01)
+        cross_entropy = SoftCrossEntropy()
+
+        test_model.train()
+        for i in range(200):
+            y = test_model(x_train)
+
+            ce = cross_entropy.forward(torch.log(y), target)
+            # print(ce.item())
+            optimizer.zero_grad()
+            ce.backward(retain_graph=True)
+            optimizer.step()
+
+        test_model.eval()
+        y_out = test_model(torch.FloatTensor(X_test))
+        y_out = np.argmax(y_out.detach().numpy(), 1)
+        print(sum(y_out == y_test)/len(y_test), y_out)
     # clf = svm.SVC(kernel='linear', C=1).fit(X_train, y_train)
     # print(clf.score(X_test, y_test))
 
